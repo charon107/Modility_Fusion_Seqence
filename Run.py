@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 import logging
 from logging import Logger
 from sklearn.metrics import mean_squared_error
+
 # 配置基础日志设置
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
@@ -27,6 +28,7 @@ logging.basicConfig(
 
 # 创建全局日志记录器
 logger: Logger = logging.getLogger(__name__)
+
 def setup_optimizer_scheduler(model, total_steps):
     """适配新版模型结构的优化器设置"""
     # 更精细的参数分组策略
@@ -69,7 +71,7 @@ def setup_optimizer_scheduler(model, total_steps):
         anneal_strategy='cos'
     )
 
-    return optimizer, scheduler, torch.nn.MSELoss()
+    return optimizer, scheduler, torch.nn.SmoothL1Loss()  # 改用Huber损失
 
 
 def train_one_epoch(model, dataloader, optimizer, criterion, scaler, device,
@@ -80,9 +82,17 @@ def train_one_epoch(model, dataloader, optimizer, criterion, scaler, device,
     optimizer.zero_grad()
 
     for step, batch in enumerate(tqdm(dataloader, desc="Training")):
-        with torch.cuda.amp.autocast():
+        with torch.amp.autocast(device_type='cuda', enabled=True):  # 更新autocast语法
             # 解包批次数据
             text_inputs, text_mask, _, audio, video, labels = [t.to(device) for t in batch]
+
+            # 检查输入数据是否包含NaN或Inf
+            if torch.isnan(text_inputs).any() or torch.isinf(text_inputs).any():
+                raise ValueError("NaN or Inf detected in text inputs")
+            if torch.isnan(audio).any() or torch.isinf(audio).any():
+                raise ValueError("NaN or Inf detected in audio inputs")
+            if torch.isnan(video).any() or torch.isinf(video).any():
+                raise ValueError("NaN or Inf detected in video inputs")
 
             # 前向传播适配新模型接口
             outputs = model(
@@ -92,13 +102,19 @@ def train_one_epoch(model, dataloader, optimizer, criterion, scaler, device,
                 video_inputs=video
             )
 
+            # 检查输出是否包含NaN或Inf
+            if torch.isnan(outputs).any() or torch.isinf(outputs).any():
+                raise ValueError("NaN or Inf detected in model outputs")
+
             loss = criterion(outputs.squeeze(), labels) / gradient_accumulation
 
         scaler.scale(loss).backward()
 
         if (step + 1) % gradient_accumulation == 0:
             scaler.unscale_(optimizer)
-            clip_grad_norm_(model.parameters(), max_grad_norm)
+            grad_norm = clip_grad_norm_(model.parameters(), max_grad_norm)
+            if torch.isnan(grad_norm) or torch.isinf(grad_norm):
+                raise ValueError("NaN or Inf detected in gradients")
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
@@ -117,7 +133,7 @@ def train_model(model, train_loader, val_loader, num_epochs=12,
     total_steps = num_epochs * (len(train_loader) // train_loader.batch_size)
 
     optimizer, scheduler, criterion = setup_optimizer_scheduler(model, total_steps)
-    scaler = GradScaler(device='cuda', enabled=True)
+    scaler = GradScaler(device_type='cuda', enabled=True)
 
     # 精简模型初始化
     model = model.to(device)

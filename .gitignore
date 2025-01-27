@@ -1,20 +1,10 @@
 
 Data/
 output/
-
-# 忽略 IDEA 或其他 IDE 的配置文件夹
 .idea/
-
-# 忽略 Visual Studio Code 配置
 .vscode/
-
-# 忽略系统生成的文件
 .DS_Store
 Thumbs.db
-
-# 忽略编译生成的文件
 *.class
 *.exe
-
-# 忽略所有的 .xml 文件（如果你认为它们不应该上传）
 *.xml
