@@ -3,243 +3,263 @@ import time
 import torch
 import torch.optim as optim
 import logging
-from torch.cuda.amp import autocast, GradScaler
+from torch.cuda.amp import autocast
+from torch.amp import GradScaler
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import numpy as np
 from dataloader import DataPreprocessor, Config, prepare_mosi_datasets
-from model import MultimodalFusion
-from evaluate import evaluate
+from model import MultimodalFusionNetwork
 import gc
-from sklearn.metrics import accuracy_score, f1_score, mean_squared_error
 import random
-import json
-from transformers import AutoModelForSequenceClassification
-import matplotlib.pyplot as plt  # Import matplotlib for plotting loss curves
+from scipy.stats import pearsonr
+import matplotlib.pyplot as plt
+import logging
+from logging import Logger
+from sklearn.metrics import mean_squared_error
+# 配置基础日志设置
+logging.basicConfig(
+    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
+    datefmt='%m/%d/%Y %H:%M:%S',
+    level=logging.INFO
+)
 
-# Set random seed for reproducibility
-def set_seed(seed=42):
-    random.seed(seed)  # Python random seed
-    np.random.seed(seed)  # NumPy random seed
-    torch.manual_seed(seed)  # PyTorch CPU random seed
-    torch.cuda.manual_seed_all(seed)  # PyTorch GPU random seed for all GPUs
-    torch.backends.cudnn.deterministic = True  # Ensure deterministic behavior
-    torch.backends.cudnn.benchmark = False  # Avoid non-deterministic algorithms
+# 创建全局日志记录器
+logger: Logger = logging.getLogger(__name__)
+def setup_optimizer_scheduler(model, total_steps):
+    """适配新版模型结构的优化器设置"""
+    # 更精细的参数分组策略
+    param_groups = [
+        {  # 文本编码器参数
+            "params": model.text_encoder.parameters(),
+            "lr": 1e-5,
+            "weight_decay": 0.01
+        },
+        {  # 视觉编码器参数
+            "params": model.video_encoder.parameters(),
+            "lr": 5e-5,
+            "weight_decay": 0.005
+        },
+        {  # 音频编码器参数
+            "params": model.audio_encoder.parameters(),
+            "lr": 5e-5,
+            "weight_decay": 0.005
+        },
+        {  # 跨模态注意力参数
+            "params": model.text_audio_attn.parameters(),
+            "lr": 1e-4,
+            "weight_decay": 0.001
+        },
+        {  # 分类器参数
+            "params": model.classifier.parameters(),
+            "lr": 2e-4,
+            "weight_decay": 0.001
+        }
+    ]
 
-# Setup logger
-logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
-                    datefmt='%m/%d/%Y %H:%M:%S', level=logging.INFO)
-logger = logging.getLogger(__name__)
+    optimizer = optim.AdamW(param_groups, betas=(0.9, 0.98), eps=1e-8)
 
-# Set random seed before starting training
-set_seed(42)  # You can change the seed value if needed
+    # 分阶段学习率调度
+    scheduler = optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=[group["lr"] for group in param_groups],
+        total_steps=total_steps,
+        pct_start=0.3,
+        anneal_strategy='cos'
+    )
 
-def setup_optimizer_scheduler(model):
-    """
-    Setup optimizer, scheduler, and loss function for training.
-    """
-    optimizer = optim.AdamW(model.parameters(), lr=5e-5)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
-    criterion = torch.nn.MSELoss()
-    return optimizer, scheduler, criterion
-
-def save_best_model(model, eval_accuracy, best_eval_accuracy, epoch, output_dir):
-    """
-    Save the model if validation accuracy improves. Only save the model weights (no config file).
-    """
-    if eval_accuracy[0] > best_eval_accuracy:
-        best_eval_accuracy = eval_accuracy[0]  # Access the first element (accuracy)
-        output_model_dir = os.path.join(output_dir, f"best_model_epoch_{epoch + 1}")
-        os.makedirs(output_model_dir, exist_ok=True)
-        logger.info(f"Saving model with accuracy {eval_accuracy[0]:.4f} to {output_model_dir}")  # Access the accuracy value
-
-        # Save model weights (no config file needed for custom model)
-        torch.save(model.state_dict(), os.path.join(output_model_dir, "pytorch_model.bin"))
-
-    return best_eval_accuracy
+    return optimizer, scheduler, torch.nn.MSELoss()
 
 
-def train_one_epoch(model, train_dataloader, optimizer, scheduler, criterion, scaler, device,
-                    gradient_accumulation_steps=1, max_grad_norm=1.0):
+def train_one_epoch(model, dataloader, optimizer, criterion, scaler, device,
+                    gradient_accumulation=4, max_grad_norm=1.0):
+    """适配新模型前向传播的训练步骤"""
     model.train()
     total_loss = 0.0
     optimizer.zero_grad()
 
-    for step, batch in enumerate(tqdm(train_dataloader, desc="Training", unit="batch")):
-        batch = [item.to(device) for item in batch]
-        if len(batch) == 5:
-            text_inputs, text_masks, audio_inputs, video_inputs, labels = batch
-        elif len(batch) == 6:
-            text_inputs, text_masks, token_type_ids, audio_inputs, video_inputs, labels = batch
-        else:
-            raise ValueError(f"Unexpected number of items in batch: {len(batch)}")
+    for step, batch in enumerate(tqdm(dataloader, desc="Training")):
+        with torch.cuda.amp.autocast():
+            # 解包批次数据
+            text_inputs, text_mask, _, audio, video, labels = [t.to(device) for t in batch]
 
-        with autocast():
-            outputs = model(text_inputs=text_inputs, text_masks=text_masks, audio_inputs=audio_inputs, video_inputs=video_inputs)
-            loss = criterion(outputs.squeeze(-1), labels)
+            # 前向传播适配新模型接口
+            outputs = model(
+                text_inputs=text_inputs,
+                text_masks=text_mask,
+                audio_inputs=audio,
+                video_inputs=video
+            )
 
-        total_loss += loss.item()
+            loss = criterion(outputs.squeeze(), labels) / gradient_accumulation
+
         scaler.scale(loss).backward()
 
-        if (step + 1) % gradient_accumulation_steps == 0:
+        if (step + 1) % gradient_accumulation == 0:
+            scaler.unscale_(optimizer)
             clip_grad_norm_(model.parameters(), max_grad_norm)
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
-            scheduler.step()
+            torch.cuda.empty_cache()
 
-    avg_loss = total_loss / len(train_dataloader)
-    return avg_loss
+        total_loss += loss.item() * gradient_accumulation
 
-def load_model(model_path, device, model_class):
-    """
-    Load a pre-trained custom model from the given path, including its weights.
+    return total_loss / len(dataloader)
 
-    Args:
-        model_path: Path to the model directory.
-        device: The device to load the model on (cuda or cpu).
-        model_class: The class of your custom model.
 
-    Returns:
-        model: The loaded model.
-    """
-    # Initialize the model using the custom model class
-    model = model_class()
+def train_model(model, train_loader, val_loader, num_epochs=12,
+                output_dir="./output", device="cuda"):
+    os.makedirs(output_dir, exist_ok=True)
 
-    # Load the model weights from the pytorch_model.bin
-    model_weights_path = os.path.join(model_path, "pytorch_model.bin")
-    if os.path.exists(model_weights_path):
-        model.load_state_dict(torch.load(model_weights_path, map_location=device))
-    else:
-        raise FileNotFoundError(f"Model weights 'pytorch_model.bin' not found at {model_path}")
+    # 调整总步数计算
+    total_steps = num_epochs * (len(train_loader) // train_loader.batch_size)
 
-    model.to(device)  # Ensure the model is moved to the correct device (CPU or GPU)
+    optimizer, scheduler, criterion = setup_optimizer_scheduler(model, total_steps)
+    scaler = GradScaler(device='cuda', enabled=True)
+
+    # 精简模型初始化
+    model = model.to(device)
+    if torch.cuda.device_count() > 1:
+        logger.warning("Detected multiple GPUs but running in single-GPU mode")
+
+    # 轻量级监控数据
+    metrics = {
+        'train_loss': [],
+        'val_pearson': [],
+        'val_mse': []
+    }
+
+    best_pearson = -1.0
+
+    # 训练循环优化
+    for epoch in range(num_epochs):
+        logger.info(f"Epoch {epoch + 1}/{num_epochs}")
+        epoch_start = time.time()
+
+        # 训练阶段
+        model.train()
+        avg_loss = train_one_epoch(
+            model, train_loader, optimizer, criterion,
+            scaler, device, gradient_accumulation=8  # 8步梯度累积
+        )
+        scheduler.step()
+
+        # 验证阶段
+        model.eval()
+        with torch.no_grad():
+            preds, labels = [], []
+            for batch in val_loader:
+                batch = [t.to(device, non_blocking=True) for t in batch]
+                text_inputs, text_mask, _, audio, video, label = batch
+
+                outputs = model(text_inputs, text_mask, audio, video)
+                preds.append(outputs.squeeze().cpu().float().numpy())
+                labels.append(label.cpu().float().numpy())
+
+                # 及时释放中间变量
+                del outputs
+                torch.cuda.empty_cache()
+
+        # 计算指标
+        preds = np.concatenate(preds)
+        labels = np.concatenate(labels)
+        mse = mean_squared_error(labels, preds)
+        pearson = pearsonr(labels, preds)[0]
+
+        # 保存最佳模型
+        if pearson > best_pearson:
+            best_pearson = pearson
+            torch.save(model.state_dict(), os.path.join(output_dir, "best_model.pt"))
+            logger.info(f"New best model saved with Pearson {pearson:.4f}")
+
+        # 记录指标
+        metrics['train_loss'].append(avg_loss)
+        metrics['val_pearson'].append(pearson)
+        metrics['val_mse'].append(mse)
+
+        # 保存轻量级检查点
+        if (epoch + 1) % 3 == 0:
+            torch.save({
+                'epoch': epoch,
+                'model_state': model.state_dict(),
+                'optimizer_state': optimizer.state_dict(),
+                'loss': avg_loss,
+            }, os.path.join(output_dir, f"checkpoint_epoch{epoch + 1}.pt"))
+
+        # 打印精简日志
+        logger.info(
+            f"Epoch {epoch + 1} | "
+            f"Loss: {avg_loss:.4f} | "
+            f"Pearson: {pearson:.4f} | "
+            f"MSE: {mse:.4f} | "
+            f"Time: {time.time() - epoch_start:.1f}s"
+        )
+
+        # 每3个epoch清理显存
+        if (epoch + 1) % 3 == 0:
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    # 可视化优化
+    plt.figure(figsize=(10, 5))
+    plt.plot(metrics['train_loss'], label='Training Loss')
+    plt.plot(metrics['val_mse'], label='Validation MSE')
+    plt.xlabel('Epoch')
+    plt.ylabel('Value')
+    plt.legend()
+    plt.savefig(os.path.join(output_dir, 'training_metrics.png'), bbox_inches='tight')
+    plt.close()
+
+    logger.info("Training completed")
     return model
 
 
-def evaluate_model(model, val_dataloader, device, eval_type="classification"):
-    """
-    Evaluate the model on the validation dataset.
-
-    Args:
-        model: The trained model.
-        val_dataloader: The dataloader for the validation dataset.
-        device: The device to run the evaluation on (cuda or cpu).
-        eval_type: Type of evaluation ("classification" or "regression").
-
-    Returns:
-        accuracy: The accuracy score for classification tasks.
-        f1: The F1 score for classification tasks.
-        mse: The Mean Squared Error for regression tasks.
-    """
-    model.eval()
-
-    all_preds = []
-    all_labels = []
-
-    with torch.no_grad():
-        for batch in val_dataloader:
-            text_inputs, text_masks, token_type_ids, audio_inputs, video_inputs, labels = batch
-            text_inputs = text_inputs.to(device)
-            text_masks = text_masks.to(device)
-            audio_inputs = audio_inputs.to(device)
-            video_inputs = video_inputs.to(device)
-            labels = labels.to(device)
-
-            # Get model predictions
-            outputs = model(text_inputs, text_masks, audio_inputs, video_inputs)
-
-            # For regression tasks, directly take the outputs as predictions
-            if eval_type == "regression":
-                preds = outputs.squeeze().cpu().numpy()  # Remove extra dimensions
-            else:
-                # For classification tasks, use threshold to classify the predictions
-                preds = (outputs > 0.5).float().cpu().numpy()  # Apply threshold for binary classification
-
-            all_preds.extend(preds)
-            all_labels.extend(labels.cpu().numpy())
-
-    if eval_type == "classification":
-        all_preds = (np.array(all_preds) > 0.5).astype(int)  # Convert to binary labels
-        all_labels = np.array(all_labels).astype(int)
-
-        accuracy = accuracy_score(all_labels, all_preds)
-        f1 = f1_score(all_labels, all_preds, average='weighted')
-        mse = None  # MSE is not needed for classification tasks
-    else:
-        accuracy = None  # Accuracy is not used for regression tasks
-        f1 = None  # F1 score is not used for regression tasks
-        mse = mean_squared_error(all_labels, all_preds)  # MSE for regression tasks
-
-    print(f"Evaluation Results: Accuracy: {accuracy}, F1: {f1}, MSE: {mse}")
-
-    return accuracy, f1, mse
-
-def train_model(model, train_dataloader, val_dataloader, optimizer, scheduler, criterion, num_epochs=10,
-                gradient_accumulation_steps=1, output_dir='./output', device='cuda', max_grad_norm=1.0):
-    """
-    Train and evaluate the model, including saving the best model based on validation accuracy.
-    """
-    model.to(device)
-    scaler = GradScaler()
-    train_losses = []  # List to store the training loss for plotting
-
-    # If using multi-GPU setup
-    if torch.cuda.device_count() > 1:
-        logger.info(f"Using {torch.cuda.device_count()} GPUs!")
-        model = torch.nn.DataParallel(model)
-
-    best_eval_accuracy = 0.0
-
-    for epoch in range(num_epochs):
-        logger.info(f"Epoch {epoch + 1}/{num_epochs}")
-
-        # Train the model for one epoch
-        start_time = time.time()
-        avg_train_loss = train_one_epoch(model, train_dataloader, optimizer, scheduler, criterion, scaler, device,
-                                         gradient_accumulation_steps, max_grad_norm)
-
-        # Log training information
-        logger.info(f"Train Loss: {avg_train_loss:.4f} - Time: {time.time() - start_time:.2f}s")
-
-        # Append the training loss for plotting
-        train_losses.append(avg_train_loss)
-
-        # Evaluate the model after each epoch (using the trained model)
-        eval_accuracy = evaluate_model(model, val_dataloader, device)
-        logger.info(f"Epoch {epoch + 1}/{num_epochs} - Validation Accuracy: {eval_accuracy[0]:.4f}")
-
-        # Save the model if the validation accuracy improves
-        best_eval_accuracy = save_best_model(model, eval_accuracy, best_eval_accuracy, epoch, output_dir)
-
-    # Plot the loss curve after all epochs are done
-    plt.plot(range(1, num_epochs + 1), train_losses, label="Train Loss")
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.title('Training Loss Over Epochs')
-    plt.legend()
-    plt.show()
-
-    logger.info("Training completed.")
-
 if __name__ == "__main__":
-    # Set configuration paths and parameters
-    config = Config(dataset="D:/Project/Modility_Fusion_Seqence/Data/MOSEI")
+    # 创建配置对象时设置所有参数
+    config = Config(
+        dataset="D:/Project/Modility_Fusion_Seqence/Data/MOSEI",
+        batch_size=32,
+        num_workers=2,
+        pin_memory=True,
+        max_seq_length=50
+    )
 
-    # Prepare data (train, validation, test loaders)
-    processor = DataPreprocessor(config)
-    train_loader, valid_loader, test_loader = prepare_mosi_datasets(config)
+    # 确保prepare_mosi_datasets返回三个数据加载器
+    try:
+        train_loader, val_loader, test_loader = prepare_mosi_datasets(config)
+        print(f"Data loaders created: Train={train_loader}, Val={val_loader}, Test={test_loader}")
+    except Exception as e:
+        print(f"Error creating data loaders: {e}")
+        exit(1)
 
-    # Initialize model
-    model = MultimodalFusion(embed_dim=256, num_heads=8, num_layers=4, dropout=0.1, output_dim=1)
+    # 初始化模型（根据实际模型架构调整参数）
+    model = MultimodalFusionNetwork(
+        text_model="bert-base-uncased",
+        audio_feature_dim=1582,
+        video_feature_dim=711,
+        embed_dim=256,
+        num_heads=8,
+        num_layers=4,
+        dropout=0.1
+    )
 
-    # Setup optimizer, scheduler, and loss function
-    optimizer, scheduler, criterion = setup_optimizer_scheduler(model)
+    # 启动训练
+    try:
+        trained_model = train_model(
+            model,
+            train_loader,
+            val_loader,
+            num_epochs=15,
+            output_dir="./output",
+            device="cuda"
+        )
+    except Exception as e:
+        print(f"Training failed: {e}")
+        exit(1)
 
-    # Train the model
-    train_model(model, train_loader, valid_loader, optimizer, scheduler, criterion, num_epochs=12,
-                gradient_accumulation_steps=2, output_dir='./output', device='cuda')
-
-    # Clean up GPU memory
+    # 最终清理
+    del trained_model
     gc.collect()
+    torch.cuda.empty_cache()
