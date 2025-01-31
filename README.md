@@ -20,7 +20,7 @@ This project, based on the **MOSI/MOSEI** database, aims to explore the impact o
   - Different fusion sequences (e.g., **T-A-V**, **A-V-T**, etc.) are experimented with.
 
 - **Final Stage**:
-  - The fused features are fed into various pre-trained **large language models**.
+  - The fused features are fed into various pre-trained **large language models**(e.g., **Roberta**, **GPT 3**, etc.).
   - The goal is to investigate whether there is an optimal modality fusion sequence, and to examine whether this sequence is universally applicable across all large pre-trained language models.
 
 ## Objective:
