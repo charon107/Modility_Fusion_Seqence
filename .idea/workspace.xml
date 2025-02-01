@@ -4,10 +4,8 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="1e6910df-49a8-4705-9129-68577dd0b21e" name="Changes" comment="update-Training failed: NaN or Inf detected in gradients">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Run.py" beforeDir="false" afterPath="$PROJECT_DIR$/Run.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/model.py" beforeDir="false" afterPath="$PROJECT_DIR$/model.py" afterDir="false" />
+    <list default="true" id="1e6910df-49a8-4705-9129-68577dd0b21e" name="Changes" comment="update">
+      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -110,6 +108,7 @@
       <workItem from="1738165881655" duration="2171000" />
       <workItem from="1738330603532" duration="11324000" />
       <workItem from="1738438308688" duration="5676000" />
+      <workItem from="1738452121973" duration="297000" />
     </task>
     <task id="LOCAL-00001" summary="update">
       <option name="closed" value="true" />
@@ -175,7 +174,15 @@
       <option name="project" value="LOCAL" />
       <updated>1738340154198</updated>
     </task>
-    <option name="localTasksCounter" value="9" />
+    <task id="LOCAL-00009" summary="update">
+      <option name="closed" value="true" />
+      <created>1738452210408</created>
+      <option name="number" value="00009" />
+      <option name="presentableId" value="LOCAL-00009" />
+      <option name="project" value="LOCAL" />
+      <updated>1738452210408</updated>
+    </task>
+    <option name="localTasksCounter" value="10" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -193,9 +200,9 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="update" />
     <MESSAGE value="update-Training failed: NaN or Inf detected in gradients" />
-    <option name="LAST_COMMIT_MESSAGE" value="update-Training failed: NaN or Inf detected in gradients" />
+    <MESSAGE value="update" />
+    <option name="LAST_COMMIT_MESSAGE" value="update" />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
     <SUITE FILE_PATH="coverage/Modility_Fusion_Seqence$dataloader.coverage" NAME="dataloader Coverage Results" MODIFIED="1737549173493" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
