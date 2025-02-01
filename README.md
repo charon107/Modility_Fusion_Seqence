@@ -6,11 +6,11 @@ This project, based on the **MOSI/MOSEI** database, aims to explore the impact o
 
 - **Audio Features**: 
   - Extracted using **OpenSmile**.
-  - A custom **Transformer Encoder** is employed as the **Acoustic modality encoder** for representation learning.
+  - A custom **Transformer Encoder** is employed as the **Custom encoder** for representation learning.
 
 - **Visual Features**:
   - Extracted using **OpenFace 2.0**.
-  - A custom **Video Transformer Encoder** is used as the **Visual modality encoder** for representation learning.
+  - A custom **Video Transformer Encoder** is used as the **Custom encoder** for representation learning.
 
 - **Text Features**: 
   - **BERT** is used as the **Text modality encoder** for feature learning.
