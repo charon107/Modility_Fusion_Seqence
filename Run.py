@@ -299,8 +299,8 @@ def train_model(model, train_loader, val_loader, num_epochs=12,
 if __name__ == "__main__":
     # Set up configuration
     config = Config(
-        dataset="D:/Project/Modility_Fusion_Seqence/Data/MOSEI",
-        batch_size=64,
+        dataset="D:/Project/Modility_Fusion_Seqence/Data/MOSI",
+        batch_size=32,
         num_workers=2,
         pin_memory=True,
         max_seq_length=50

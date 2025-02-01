@@ -23,7 +23,7 @@ def set_random_seed(seed):
     torch.backends.cudnn.benchmark = False  # Disable CuDNN auto-tuning for deterministic results
 
 # Set a fixed random seed
-seed = 8
+seed = 45
 set_random_seed(seed)
 
 class AudioFeatureEncoder(nn.Module):
