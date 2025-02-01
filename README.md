@@ -23,7 +23,7 @@ This project, based on the **MOSI/MOSEI** database, aims to explore the impact o
   - The fused features are fed into various pre-trained **large language models**(e.g., **Roberta**, **GPT 3**, etc.).
   - The goal is to investigate whether there is an optimal modality fusion sequence, and to examine whether this sequence is universally applicable across all large pre-trained language models.
 
-![Model Architecture](images/Model Architecture.png)
+![Model Architecture](images/Model_Architecture.png)
 ## Objective:
 
 - Investigate the impact of different modality fusion sequences on model performance.
